@@ -19,7 +19,7 @@ app = Flask(__name__)
 applied_today = []
 
 # ---------------------------------------------------------------------------
-# ОБЩИЕ ЗАГОЛОВКИ БРАУЗЕРА ДЛЯ ОБХОДА ЗАЩИТЫ HH.RU
+# ЗАГОЛОВКИ БРАУЗЕРА ДЛЯ HH.RU
 # ---------------------------------------------------------------------------
 def get_hh_headers():
     return {
@@ -60,16 +60,15 @@ def setup_bot_commands():
 # ЛОГИКА HH.RU И OPENAI
 # ---------------------------------------------------------------------------
 def raise_resume():
-    """Функция поднятия резюме на hh.ru с расширенными заголовками"""
+    """Функция поднятия резюме на hh.ru"""
     send_telegram("🔄 Проверяю список резюме на hh.ru...")
-    
     headers = get_hh_headers()
     
     try:
         res = requests.get("https://api.hh.ru/resumes/mine", headers=headers)
         
         if res.status_code != 200:
-            send_telegram(f"⚠️ Ошибка hh.ru API: статус {res.status_code}. Ответ: {res.text[:100]}")
+            send_telegram(f"⚠️ Ошибка hh.ru API: статус {res.status_code}. (На Render куки блокируются защитой Cloudflare 403)")
             return False
             
         data = res.json()
@@ -83,9 +82,7 @@ def raise_resume():
         for r in resumes:
             title = r.get("title", "")
             resume_id = r.get("id")
-            print(f"Найдено резюме: {title} (ID: {resume_id})")
             
-            # Ищем нужное резюме
             if "Владелец продукта" in title or "Product Owner" in title or "Product Manager" in title:
                 found = True
                 bump_res = requests.post(f"https://api.hh.ru/resumes/{resume_id}/publish", headers=headers)
@@ -101,7 +98,7 @@ def raise_resume():
                     return False
                     
         if not found:
-            send_telegram("⚠️ Резюме с подходящим названием («Владелец продукта» / Product) не найдено в списке.")
+            send_telegram("⚠️ Резюме с подходящим названием не найдено в списке.")
             
     except Exception as e:
         send_telegram(f"❌ Критическая ошибка при поднятии резюме: {str(e)}")
@@ -133,7 +130,7 @@ def search_and_apply():
     try:
         response = requests.get("https://api.hh.ru/vacancies", headers=headers, params=params)
         if response.status_code != 200:
-            send_telegram(f"⚠️ Ошибка hh.ru API при поиске: {response.status_code}")
+            send_telegram(f"⚠️ Ошибка hh.ru API при поиске: {response.status_code} (Защита Cloudflare на хостинге)")
             return
             
         vacancies = response.json().get("items", [])
@@ -181,7 +178,7 @@ def receive_telegram_update():
         elif text == "/bump":
             threading.Thread(target=raise_resume).start()
         elif text == "/status":
-            send_telegram("ℹ️ **Статус:** Бот активен, работает в фоновом режиме на Render 24/7.")
+            send_telegram("ℹ️ **Статус:** Бот активен, вебхук работает.")
         elif text == "/report":
             send_telegram(f"📊 **Отчет за сегодня:** Отправлено откликов: {len(applied_today)}")
             
@@ -201,7 +198,7 @@ def bot_loop():
     set_webhook()
     send_telegram(
         "🚀 **Бот полностью активирован!**\n\n"
-        "Интерактивное меню готово:\n"
+        "Доступные команды:\n"
         "• `/run` — запустить отклики\n"
         "• `/bump` — поднять резюме\n"
         "• `/status` — статус\n"
