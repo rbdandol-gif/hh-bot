@@ -2,7 +2,7 @@ import os
 import time
 import threading
 import requests
-from flask import Flask
+from flask import Flask, request
 from openai import OpenAI
 
 # ---------------------------------------------------------------------------
@@ -16,24 +16,17 @@ HH_COOKIES = os.getenv("HH_COOKIES")
 client = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
 
-# Хранилище логов откликов за день
 applied_today = []
 
-@app.route('/')
-def home():
-    return "HH Bot is running!"
-
 # ---------------------------------------------------------------------------
-# TELEGRAM ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# TELEGRAM ФУНКЦИИ
 # ---------------------------------------------------------------------------
 def send_telegram(text):
-    """Отправка текстового сообщения в Telegram"""
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"})
 
 def setup_bot_commands():
-    """Регистрация всплывающего меню команд в Telegram"""
     if not TELEGRAM_TOKEN:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setMyCommands"
@@ -46,13 +39,12 @@ def setup_bot_commands():
     try:
         requests.post(url, json={"commands": commands})
     except Exception as e:
-        print(f"Ошибка при установке меню команд: {e}")
+        print(f"Ошибка меню команд: {e}")
 
 # ---------------------------------------------------------------------------
-# БОТ-ЛОГИКА HH.RU И OPENAI
+# ЛОГИКА HH.RU И OPENAI
 # ---------------------------------------------------------------------------
 def raise_resume():
-    """Функция бесплатного поднятия резюме на hh.ru"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Cookie": HH_COOKIES or ""
@@ -72,54 +64,42 @@ def raise_resume():
                     else:
                         send_telegram("ℹ️ Кнопка поднятия резюме пока недоступна (интервал 4 часа не прошел).")
                         return False
-            send_telegram("⚠️ Резюме с названием «Владелец продукта» не найдено в профиле.")
+            send_telegram("⚠️ Резюме «Владелец продукта» не найдено.")
         else:
-            send_telegram("⚠️ Не удалось получить список резюме hh.ru (проверьте HH_COOKIES).")
+            send_telegram("⚠️ Не удалось получить список резюме (проверьте HH_COOKIES).")
     except Exception as e:
         send_telegram(f"❌ Ошибка при поднятии резюме: {e}")
     return False
 
 def generate_cover_letter(job_title, job_description):
-    """Генерация персонализированного письма через ChatGPT"""
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты профессиональный Product Owner / Product Manager. "
-                        "Напиши краткое, убедительное сопроводительное письмо для вакансии в сфере B2C кредитования/ипотеки "
-                        "(до 500 символов), без воды, делая упор на развитие потребительских кредитных продуктов."
-                    )
-                },
+                {"role": "system", "content": "Ты профессиональный Product Owner. Напиши краткое сопроводительное письмо для вакансии B2C кредитования/ипотеки (до 500 символов)."},
                 {"role": "user", "content": f"Вакансия: {job_title}\nОписание: {job_description}"}
             ]
         )
         return response.choices[0].message.content
     except Exception:
-        return "Здравствуйте! Заинтересовала ваша вакансия Product Owner / Product Manager. Имею релевантный опыт в B2C кредитных продуктах."
+        return "Здравствуйте! Заинтересовала ваша вакансия Product Owner / Product Manager. Имею релевантный опыт."
 
 def search_and_apply():
-    """Поиск и отклик на вакансии в Москве"""
-    send_telegram("🔍 **Запуск поиска вакансий (Москва)**\nФильтры: Product Manager / Owner (B2C ипотека, потребительские кредиты).")
-    
+    send_telegram("🔍 **Запуск поиска вакансий (Москва)**\nФильтры: Product Manager / Owner (B2C кредиты/ипотека).")
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Cookie": HH_COOKIES or ""
     }
-    
     params = {
-        "text": "Product Manager OR Product Owner OR владелец продукта OR менеджер продукта",
-        "area": 1,  # Москва
+        "text": "Product Manager OR Product Owner OR владелец продукта",
+        "area": 1,
         "period": 7,
         "per_page": 10
     }
-    
     try:
         response = requests.get("https://api.hh.ru/vacancies", headers=headers, params=params)
         if response.status_code != 200:
-            send_telegram(f"⚠️ Ошибка hh.ru API: статус {response.status_code}")
+            send_telegram(f"⚠️ Ошибка hh.ru API: {response.status_code}")
             return
             
         vacancies = response.json().get("items", [])
@@ -129,60 +109,82 @@ def search_and_apply():
             title = vac.get("name", "")
             vac_url = vac.get("alternate_url", "")
             employer = vac.get("employer", {}).get("name", "Компания")
-            
             snippet = vac.get("snippet", {})
             full_text = ((snippet.get("requirement") or "") + " " + (snippet.get("responsibility") or "")).lower()
             
-            # Фильтр стоп-слов
             if any(stop in full_text for stop in ["b2b", "корпоративн", "брокер", "кредитные карты"]):
                 continue
                 
             letter = generate_cover_letter(title, full_text)
-            
             applied_today.append({"company": employer, "title": title, "url": vac_url})
             
-            send_telegram(
-                f"✅ **Отклик отправлен!**\n"
-                f"💼 **Компания:** {employer}\n"
-                f"📌 **Вакансия:** [{title}]({vac_url})\n\n"
-                f"✉️ *Письмо:* {letter}"
-            )
+            send_telegram(f"✅ **Отклик отправлен!**\n💼 **Компания:** {employer}\n📌 **Вакансия:** [{title}]({vac_url})\n\n✉️ *Письмо:* {letter}")
             count += 1
-            if count >= 5:  # Лимит на запуск
+            if count >= 5:
                 break
             time.sleep(2)
             
         send_telegram(f"🏁 **Запуск завершен.** Отправлено откликов: {count}")
-        
     except Exception as e:
         send_telegram(f"❌ Ошибка во время отклика: {e}")
 
 # ---------------------------------------------------------------------------
-# ЦИКЛ РАБОТЫ И ЗАПУСК СЕРВЕРА
+# FLASK ВЕБ-СЕРВЕР И ОБРАБОТЧИК КОМАНД ИЗ TELEGRAM
+# ---------------------------------------------------------------------------
+@app.route('/')
+def home():
+    return "HH Bot is running!"
+
+@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
+def receive_telegram_update():
+    """Эндпоинт, куда Telegram шлет входящие сообщения/команды"""
+    data = request.get_json()
+    if data and "message" in data:
+        message = data["message"]
+        text = message.get("text", "")
+        
+        # Обрабатываем команды
+        if text == "/run":
+            threading.Thread(target=search_and_apply).start()
+        elif text == "/bump":
+            threading.Thread(target=raise_resume).start()
+        elif text == "/status":
+            send_telegram("ℹ️ **Статус:** Бот активен, работает в фоновом режиме на Render 24/7.")
+        elif text == "/report":
+            send_telegram(f"📊 **Отчет за сегодня:** Отправлено откликов: {len(applied_today)}")
+            
+    return {"status": "ok"}
+
+def set_webhook():
+    """Автоматическая привязка вебхука к нашему URL на Render"""
+    render_url = os.getenv("RENDER_EXTERNAL_URL")
+    if render_url and TELEGRAM_TOKEN:
+        webhook_url = f"{render_url}/{TELEGRAM_TOKEN}"
+        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}")
+
+# ---------------------------------------------------------------------------
+# ФОНОВЫЙ ПОТОК И ЗАПУСК
 # ---------------------------------------------------------------------------
 def bot_loop():
-    """Фоновый поток управления ботом"""
     setup_bot_commands()
+    set_webhook()
     send_telegram(
-        "🚀 **Бот успешно запущен на Render 24/7!**\n\n"
-        "В чате добавлено удобное меню команд (нажмите `/` на клавиатуре):\n"
+        "🚀 **Бот полностью активирован!**\n\n"
+        "Теперь команды интерактивные:\n"
         "• `/run` — запустить отклики\n"
         "• `/bump` — поднять резюме\n"
-        "• `/status` — статус бота\n"
-        "• `/report` — дневной отчет"
+        "• `/status` — статус\n"
+        "• `/report` — отчет"
     )
-    
     while True:
-        # Автоподнятие резюме каждые 4 часа
+        # Автоматическое поднятие резюме каждые 4 часа
         time.sleep(14400)
         raise_resume()
 
 if __name__ == "__main__":
-    # Запускаем фоновый поток бота
     t = threading.Thread(target=bot_loop)
     t.daemon = True
     t.start()
     
-    # Запускаем веб-сервер для прохождения проверок порта Render
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
