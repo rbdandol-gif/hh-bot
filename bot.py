@@ -59,7 +59,6 @@ def raise_resume():
     try:
         res = requests.get("https://api.hh.ru/resumes/mine", headers=headers)
         
-        # Если пришел редирект на капчу или логин (авторизация слетела)
         if res.status_code != 200:
             send_telegram(f"⚠️ Ошибка hh.ru API: статус {res.status_code}. Возможно, куки устарели или требуют обновления.")
             return False
@@ -75,7 +74,7 @@ def raise_resume():
         for r in resumes:
             title = r.get("title", "")
             resume_id = r.get("id")
-            print( найдено резюме: {title} (ID: {resume_id}) )
+            print(f"Найдено резюме: {title} (ID: {resume_id})")
             
             # Ищем нужное резюме
             if "Владелец продукта" in title or "Product Owner" in title or "Product Manager" in title:
@@ -211,5 +210,5 @@ if __name__ == "__main__":
     t.daemon = True
     t.start()
     
-    port = int(os.environ.com("PORT", 10000) if hasattr(os.environ, "com") else os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
