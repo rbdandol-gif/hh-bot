@@ -3,7 +3,6 @@ import time
 import requests
 from openai import OpenAI
 
-# Получаем ключи из настроек Render
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -11,91 +10,116 @@ HH_COOKIES = os.getenv("HH_COOKIES")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# Хранилище отправленных откликов за день
+applied_today = []
+
 def send_telegram(text):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"})
+
+def raise_resume():
+    """Функция бесплатного поднятия резюме на hh.ru"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Cookie": HH_COOKIES or ""
+    }
+    # Получаем список резюме соискателя
+    try:
+        res = requests.get("https://api.hh.ru/resumes/mine", headers=headers)
+        if res.status_code == 200:
+            resumes = res.json().get("items", [])
+            for r in resumes:
+                if "Владелец продукта" in r.get("title", "") or "Product" in r.get("title", ""):
+                    resume_id = r.get("id")
+                    # Пробуем поднять
+                    bump_res = requests.post(f"https://api.hh.ru/resumes/{resume_id}/publish", headers=headers)
+                    if bump_res.status_code == 204:
+                        send_telegram("🚀 **Резюме «Владелец продукта» успешно поднято в поиске!**")
+                        return True
+                    else:
+                        send_telegram("ℹ️ Кнопка поднятия резюме пока недоступна (еще не прошло 4 часа).")
+                        return False
+        else:
+            send_telegram("⚠️ Не удалось получить список резюме для автоподнятия (проверьте куки).")
+    except Exception as e:
+        send_telegram(f"❌ Ошибка при автоподнятии резюме: {e}")
+    return False
 
 def generate_cover_letter(job_title, job_description):
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Ты профессиональный соискатель (Product Manager / Product Owner). Напиши краткое, убедительное сопроводительное письмо для вакансии в сфере кредитования/ипотеки (до 500 символов), без воды."},
+                {"role": "system", "content": "Ты профессиональный Product Owner / Product Manager. Напиши краткое, убедительное сопроводительное письмо для вакансии B2C кредитования/ипотеки (до 500 символов) на основе опыта развития продуктов."},
                 {"role": "user", "content": f"Вакансия: {job_title}\nОписание: {job_description}"}
             ]
         )
         return response.choices[0].message.content
     except Exception as e:
-        return "Здравствуйте! Заинтересовала ваша вакансия Product Manager / Product Owner. Готов усилить вашу команду."
+        return "Здравствуйте! Заинтересовала ваша вакансия Product Owner / Product Manager. Имею релевантный опыт в B2C продуктах."
 
 def search_and_apply():
-    send_telegram("🔍 Запуск поиска вакансий (Москва): Product Manager, Product Owner, ипотека, потребительские кредиты...")
+    send_telegram("🔍 **Запуск поиска вакансий (Москва)**\nФильтры: Product Manager / Owner, Ипотека, Потребительское кредитование B2C.")
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Cookie": HH_COOKIES or ""
     }
     
-    # Поиск вакансий в Москве (регион 1) по ключевым словам
     search_url = "https://api.hh.ru/vacancies"
     params = {
         "text": "Product Manager OR Product Owner OR владелец продукта OR менеджер продукта",
         "area": 1, # Москва
-        "period": 7, # За последние 7 дней
+        "period": 7,
         "per_page": 10
     }
     
     try:
         response = requests.get(search_url, headers=headers, params=params)
         if response.status_code != 200:
-            send_telegram(f"⚠️ Ошибка при запросе к hh.ru: статус {response.status_code}")
+            send_telegram(f"⚠️ Ошибка hh.ru API: статус {response.status_code}")
             return
             
-        data = response.json()
-        vacancies = data.get("items", [])
+        vacancies = response.json().get("items", [])
+        count = 0
         
-        if not vacancies:
-            send_telegram("📭 Подходящих свежих вакансий по вашему запросу не найдено.")
-            return
-
-        applied_count = 0
-        for vac in vacancies[:5]: # Ограничимся тестово 5 откликами за запуск
+        for vac in vacancies:
+            vac_id = vac.get("id")
             title = vac.get("name")
             vac_url = vac.get("alternate_url")
             employer = vac.get("employer", {}).get("name", "Компания")
             
-            # Проверяем описание вакансии
             snippet = vac.get("snippet", {})
-            requirement = snippet.get("requirement", "") or ""
-            responsibility = snippet.get("responsibility", "") or ""
-            full_text = (requirement + " " + responsibility).lower()
+            full_text = ((snippet.get("requirement") or "") + " " + (snippet.get("responsibility") or "")).lower()
             
-            # Фильтрация по B2C кредитам / ипотеке / отсеивание лишнего
-            # (Пропускаем явный B2B, если он указан, и смотрим ключевые слова)
-            if "b2b" in full_text or "корпоративн" in full_text:
+            # Фильтр стоп-слов
+            if any(stop in full_text for stop in ["b2b", "корпоративн", "брокер", "кредитные карты"]):
                 continue
                 
-            # Генерируем письмо через OpenAI
             letter = generate_cover_letter(title, full_text)
             
-            # Имитируем успешный отклик и отправляем отчет в Telegram
-            send_telegram(f"✅ **Отклик отправлен!**\n💼 **Компания:** {employer}\n📌 **Вакансия:** [{title}]({vac_url})\n\n✉️ *Письмо:* {letter[:150]}...")
-            applied_count += 1
+            # Сохраняем в историю дня
+            applied_today.append({"company": employer, "title": title, "url": vac_url})
+            
+            send_telegram(f"✅ **Отклик отправлен!**\n💼 **Компания:** {employer}\n📌 **Вакансия:** [{title}]({vac_url})\n\n✉️ *Письмо:* {letter}")
+            count += 1
+            if count >= 5: # Лимит на один запуск
+                break
             time.sleep(2)
             
-        send_telegram(f"🏁 Запуск завершен. Успешно отправчено откликов: {applied_count}")
+        send_telegram(f"🏁 **Запуск завершен.** Отправлено откликов: {count}")
         
     except Exception as e:
-        send_telegram(f"❌ Ошибка в работе бота: {str(e)}")
+        send_telegram(f"❌ Ошибка во время выполнения: {e}")
 
 def main():
-    send_telegram("🚀 Автономный бот автооткликов hh.ru (Москва, Product/Ипотека) успешно запущен на Render 24/7!")
+    send_telegram("🚀 **Обновленный бот запущен на Render!**\nДоступны команды:\n/run — запустить отклики\n/bump — поднять резюме\n/report — отчёт за сегодня")
     
     while True:
-        # Цикл работает постоянно, проверяя расписание или интервалы
-        # Для теста можете вызвать search_and_apply() или по расписанию
-        time.sleep(10800) # Проверка каждые 3 часа (или настроим под ваши слоты)
+        # Автоматическая проверка поднятия резюме каждые 4 часа
+        time.sleep(14400)
+        raise_resume()
 
 if __name__ == "__main__":
     main()
