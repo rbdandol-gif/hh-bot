@@ -24,7 +24,10 @@ applied_today = []
 def send_telegram(text):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"})
+        try:
+            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"})
+        except Exception as e:
+            print(f"Ошибка отправки в Telegram: {e}")
 
 def setup_bot_commands():
     if not TELEGRAM_TOKEN:
@@ -45,30 +48,56 @@ def setup_bot_commands():
 # ЛОГИКА HH.RU И OPENAI
 # ---------------------------------------------------------------------------
 def raise_resume():
+    """Функция поднятия резюме на hh.ru с подробным логированием"""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Cookie": HH_COOKIES or ""
     }
+    
+    send_telegram("🔄 Проверяю список резюме на hh.ru...")
+    
     try:
         res = requests.get("https://api.hh.ru/resumes/mine", headers=headers)
-        if res.status_code == 200:
-            resumes = res.json().get("items", [])
-            for r in resumes:
-                title = r.get("title", "")
-                if "Владелец продукта" in title or "Product Owner" in title:
-                    resume_id = r.get("id")
-                    bump_res = requests.post(f"https://api.hh.ru/resumes/{resume_id}/publish", headers=headers)
-                    if bump_res.status_code == 204:
-                        send_telegram("🚀 **Резюме «Владелец продукта» успешно поднято в поиске!**")
-                        return True
-                    else:
-                        send_telegram("ℹ️ Кнопка поднятия резюме пока недоступна (интервал 4 часа не прошел).")
-                        return False
-            send_telegram("⚠️ Резюме «Владелец продукта» не найдено.")
-        else:
-            send_telegram("⚠️ Не удалось получить список резюме (проверьте HH_COOKIES).")
+        
+        # Если пришел редирект на капчу или логин (авторизация слетела)
+        if res.status_code != 200:
+            send_telegram(f"⚠️ Ошибка hh.ru API: статус {res.status_code}. Возможно, куки устарели или требуют обновления.")
+            return False
+            
+        data = res.json()
+        resumes = data.get("items", [])
+        
+        if not resumes:
+            send_telegram("⚠️ В профиле hh.ru не найдено ни одного резюме.")
+            return False
+            
+        found = False
+        for r in resumes:
+            title = r.get("title", "")
+            resume_id = r.get("id")
+            print( найдено резюме: {title} (ID: {resume_id}) )
+            
+            # Ищем нужное резюме
+            if "Владелец продукта" in title or "Product Owner" in title or "Product Manager" in title:
+                found = True
+                bump_res = requests.post(f"https://api.hh.ru/resumes/{resume_id}/publish", headers=headers)
+                
+                if bump_res.status_code == 204:
+                    send_telegram("🚀 **Резюме успешно поднято в поиске!**")
+                    return True
+                elif bump_res.status_code == 400:
+                    send_telegram("ℹ️ Кнопка поднятия резюме пока недоступна (интервал 4 часа еще не прошел).")
+                    return False
+                else:
+                    send_telegram(f"⚠️ Не удалось поднять резюме. Код ответа hh.ru: {bump_res.status_code}")
+                    return False
+                    
+        if not found:
+            send_telegram("⚠️ Резюме с подходящим названием («Владелец продукта» / Product) не найдено в списке.")
+            
     except Exception as e:
-        send_telegram(f"❌ Ошибка при поднятии резюме: {e}")
+        send_telegram(f"❌ Критическая ошибка при поднятии резюме: {str(e)}")
+        
     return False
 
 def generate_cover_letter(job_title, job_description):
@@ -87,7 +116,7 @@ def generate_cover_letter(job_title, job_description):
 def search_and_apply():
     send_telegram("🔍 **Запуск поиска вакансий (Москва)**\nФильтры: Product Manager / Owner (B2C кредиты/ипотека).")
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Cookie": HH_COOKIES or ""
     }
     params = {
@@ -137,13 +166,11 @@ def home():
 
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def receive_telegram_update():
-    """Эндпоинт, куда Telegram шлет входящие сообщения/команды"""
     data = request.get_json()
     if data and "message" in data:
         message = data["message"]
         text = message.get("text", "")
         
-        # Обрабатываем команды
         if text == "/run":
             threading.Thread(target=search_and_apply).start()
         elif text == "/bump":
@@ -156,7 +183,6 @@ def receive_telegram_update():
     return {"status": "ok"}
 
 def set_webhook():
-    """Автоматическая привязка вебхука к нашему URL на Render"""
     render_url = os.getenv("RENDER_EXTERNAL_URL")
     if render_url and TELEGRAM_TOKEN:
         webhook_url = f"{render_url}/{TELEGRAM_TOKEN}"
@@ -170,14 +196,13 @@ def bot_loop():
     set_webhook()
     send_telegram(
         "🚀 **Бот полностью активирован!**\n\n"
-        "Теперь команды интерактивные:\n"
+        "Интерактивное меню готово:\n"
         "• `/run` — запустить отклики\n"
         "• `/bump` — поднять резюме\n"
         "• `/status` — статус\n"
         "• `/report` — отчет"
     )
     while True:
-        # Автоматическое поднятие резюме каждые 4 часа
         time.sleep(14400)
         raise_resume()
 
@@ -186,5 +211,5 @@ if __name__ == "__main__":
     t.daemon = True
     t.start()
     
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.com("PORT", 10000) if hasattr(os.environ, "com") else os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
