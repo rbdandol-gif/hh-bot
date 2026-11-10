@@ -19,6 +19,18 @@ app = Flask(__name__)
 applied_today = []
 
 # ---------------------------------------------------------------------------
+# ОБЩИЕ ЗАГОЛОВКИ БРАУЗЕРА ДЛЯ ОБХОДА ЗАЩИТЫ HH.RU
+# ---------------------------------------------------------------------------
+def get_hh_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://hh.ru/",
+        "Cookie": HH_COOKIES or ""
+    }
+
+# ---------------------------------------------------------------------------
 # TELEGRAM ФУНКЦИИ
 # ---------------------------------------------------------------------------
 def send_telegram(text):
@@ -48,19 +60,16 @@ def setup_bot_commands():
 # ЛОГИКА HH.RU И OPENAI
 # ---------------------------------------------------------------------------
 def raise_resume():
-    """Функция поднятия резюме на hh.ru с подробным логированием"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Cookie": HH_COOKIES or ""
-    }
-    
+    """Функция поднятия резюме на hh.ru с расширенными заголовками"""
     send_telegram("🔄 Проверяю список резюме на hh.ru...")
+    
+    headers = get_hh_headers()
     
     try:
         res = requests.get("https://api.hh.ru/resumes/mine", headers=headers)
         
         if res.status_code != 200:
-            send_telegram(f"⚠️ Ошибка hh.ru API: статус {res.status_code}. Возможно, куки устарели или требуют обновления.")
+            send_telegram(f"⚠️ Ошибка hh.ru API: статус {res.status_code}. Ответ: {res.text[:100]}")
             return False
             
         data = res.json()
@@ -114,10 +123,7 @@ def generate_cover_letter(job_title, job_description):
 
 def search_and_apply():
     send_telegram("🔍 **Запуск поиска вакансий (Москва)**\nФильтры: Product Manager / Owner (B2C кредиты/ипотека).")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Cookie": HH_COOKIES or ""
-    }
+    headers = get_hh_headers()
     params = {
         "text": "Product Manager OR Product Owner OR владелец продукта",
         "area": 1,
@@ -127,7 +133,7 @@ def search_and_apply():
     try:
         response = requests.get("https://api.hh.ru/vacancies", headers=headers, params=params)
         if response.status_code != 200:
-            send_telegram(f"⚠️ Ошибка hh.ru API: {response.status_code}")
+            send_telegram(f"⚠️ Ошибка hh.ru API при поиске: {response.status_code}")
             return
             
         vacancies = response.json().get("items", [])
